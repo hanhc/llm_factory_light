@@ -1,0 +1,36 @@
+# 训练方法
+training_method: lora
+
+# 模型配置
+model:
+  name_or_path: "meta-llama/Meta-Llama-3-8B-Instruct"
+  # quantization_config for QLoRA can be added here
+
+# 数据配置
+data:
+  file_path: "./data/my_chat_dataset.jsonl"
+  file_format: "jsonl"
+  tokenizer_name_or_path: "meta-llama/Meta-Llama-3-8B-Instruct"
+
+# LoRA 特定配置
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+
+# 训练参数 (对应 transformers.TrainingArguments)
+training_args:
+  output_dir: "./output/llama3-8b-lora"
+  num_train_epochs: 3
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  logging_steps: 10
+  save_steps: 100
+  bf16: true # 如果你的 GPU 支持
+  tf32: true # 如果你的 GPU 支持

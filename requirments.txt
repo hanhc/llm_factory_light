@@ -1,0 +1,12 @@
+torch
+transformers
+datasets
+peft
+trl
+accelerate
+bitsandbytes # for 8/4-bit quantization
+scipy
+vllm
+fastapi
+uvicorn[standard]
+pyyaml
