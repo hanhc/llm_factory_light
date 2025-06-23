@@ -1,33 +1,48 @@
-# 使用包含 CUDA 和 PyTorch 的官方镜像
-# vLLM 对 CUDA 和 PyTorch 版本有严格要求，请根据 vLLM 官网选择合适的基础镜像
-FROM nvcr.io/nvidia/pytorch:24.03-py3
+# Use a vLLM compatible base image or an official PyTorch image with correct CUDA
+# Example: Using a PyTorch base image. You might need to adjust for vLLM compatibility.
+# Check vLLM documentation for recommended base images.
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+# FROM nvcr.io/nvidia/pytorch:24.03-py3 # Alternative if it suits vLLM
 
-# 设置工作目录
+# Set environment variables to prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+# Install essential build tools and git
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    software-properties-common \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
 WORKDIR /app
 
-# 安装项目依赖
-# 拷贝 requirements.txt 并安装，以利用 Docker 缓存
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
-# vLLM 安装可能需要特殊处理，确保与 PyTorch 和 CUDA 版本兼容
-# 建议使用 vLLM 官方提供的 wheel 或从源码编译
-RUN pip install -r requirements.txt
-# 例如: pip install vllm==0.4.0 --no-build-isolation
+# Install Python dependencies
+# Consider using a specific vLLM wheel if direct pip install causes issues
+RUN pip install --no-cache-dir -r requirements.txt
+# Example for a specific vLLM version if needed:
+# RUN pip install vllm==0.4.0 --no-build-isolation
 
-# 拷贝整个项目代码
+# Copy the rest of the application code
 COPY . .
 
-# 设置 PYTHONPATH
+# Set PYTHONPATH so llm_factory module can be found
 ENV PYTHONPATH=/app
 
-# Create log directory if not handled by the application, and set permissions
-# This is a fallback, ideally the app creates it or logs to stdout/stderr managed by Docker
-RUN mkdir -p /app/logs && chown -R <user>:<group> /app/logs # Replace <user>:<group> if not running as root
+# Create log directory and set permissions (if not running as root, adjust user/group)
+# The application's logging_setup.py will also try to create this.
+RUN mkdir -p /app/logs && chmod 777 /app/logs
 
-# 暴露 API 端口
+# Expose the API port
 EXPOSE 8000
 
-# 默认启动命令 (可以被 docker run 命令覆盖)
-# 启动推理服务，模型路径通过环境变量传入
-CMD ["sh", "-c", "export MODEL_PATH=${MODEL_PATH:-/app/output/my-model} && \
-                 python -m llm_factory.main inference_api --config /app/configs/inference_config.yaml"]
+# Default command to run the inference API server
+# MODEL_PATH and TP_SIZE should be passed as environment variables during `docker run`
+# The default in CMD is a fallback if not provided.
+CMD ["sh", "-c", "export MODEL_PATH=${MODEL_PATH:-/app/output/default_model} && \
+                  export TP_SIZE=${TP_SIZE:-1} && \
+                  python -m llm_factory.main inference_api --config /app/configs/inference_config.yaml --port 8000"]

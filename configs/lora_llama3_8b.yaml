@@ -1,16 +1,16 @@
-# 训练方法
 training_method: lora
 
-# 模型配置
 model:
-  name_or_path: "meta-llama/Meta-Llama-3-8B-Instruct"
-  # quantization_config for QLoRA can be added here
+  name_or_path: "meta-llama/Meta-Llama-3-8B-Instruct" # Requires access
+  # To test without access, use a smaller, open model like "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
-# 数据配置
 data:
-  file_path: "./data/my_chat_dataset.jsonl"
+  file_path: "./data/sample_lora_dataset.jsonl" # Placeholder: Create this sample file
   file_format: "jsonl"
-  tokenizer_name_or_path: "meta-llama/Meta-Llama-3-8B-Instruct"
+  tokenizer_name_or_path: "meta-llama/Meta-Llama-3-8B-Instruct" # Match model
+  use_fast_tokenizer: true
+  # DataProcessor should format this into prompt/response for LoRA template
+  # Example template in DataProcessor: "### Human: {prompt}\n### Assistant: {response}"
 
 # LoRA 特定配置
 lora:
@@ -22,49 +22,47 @@ lora:
     - "k_proj"
     - "v_proj"
     - "o_proj"
+    # - "gate_proj" # For Llama like models
+    # - "up_proj"
+    # - "down_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
 
-# 训练参数 (对应 transformers.TrainingArguments)
+
+# 训练参数 (transformers.TrainingArguments)
 training_args:
   output_dir: "./output/llama3-8b-lora"
-  num_train_epochs: 3
-  per_device_train_batch_size: 2
+  num_train_epochs: 1 # For quick test
+  per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
   learning_rate: 2.0e-5
   logging_steps: 10
-  save_steps: 100
-  bf16: true # 如果你的 GPU 支持
-  tf32: true # 如果你的 GPU 支持
+  save_steps: 50
+  save_total_limit: 2
+  bf16: true
+  # tf32: true
+  report_to: "none"
 
-# 日志配置 (可选，如果未提供，将使用 logging_setup.py 中的 DEFAULT_LOGGING_CONFIG)
-# ... (model, data, lora, training_args sections from previous example) ...
+# Evaluation config (optional, can be separate)
+evaluation:
+  model_to_evaluate_path: "./output/llama3-8b-lora" # After training
+  dataset_path: "wikitext"
+  dataset_name: "wikitext-2-raw-v1"
+  dataset_split: "test"
+  text_column: "text"
+  metrics: ["perplexity"]
+  batch_size: 1
+  output_file: "./output/llama3-8b-lora/eval_results.json"
 
-# 日志配置 (可选，如果未提供，将使用 logging_setup.py 中的 DEFAULT_LOGGING_CONFIG)
+# 日志配置
 logging:
-  formatters:
-    standard: # Override standard formatter if needed
-      format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
   handlers:
-    console:
-      level: "INFO" # Set console level to INFO for this specific run
     file_handler:
-      filename: "logs/my_experiment_llama3_lora.log" # Specific log file for this experiment
-      level: "DEBUG"
+      filename: "logs/lora_llama3_8b_train.log"
   loggers:
     llm_factory:
-      level: "DEBUG" # Get detailed logs from our application
-      handlers: ["console", "file_handler"] # Ensure it uses our defined handlers
+      level: "DEBUG"
     transformers:
-      level: "INFO" # Reduce verbosity from transformers for this run
-  root:
-    level: "INFO"
-
-evaluation:
-  model_to_evaluate_path: "./output/llama3-8b-lora" # Path to the fine-tuned model
-  dataset_path: "wikitext" # Or path to a local file e.g., "./data/eval_data.txt"
-  dataset_name: "wikitext-2-raw-v1" # If using HF datasets library identifier
-  dataset_split: "test"
-  text_column: "text" # Column in dataset containing text for perplexity
-  metrics: ["perplexity"] # List of metrics to compute
-  batch_size: 2 # Batch size for perplexity calculation
-  perplexity_stride: 512
-  output_file: "./output/llama3-8b-lora/eval_results.json"
+      level: "INFO"
+    peft:
+      level: "INFO"

@@ -1,13 +1,14 @@
 import logging
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer  # AutoModelForCausalLM already in BaseTrainer
 from trl import PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
 from datasets import Dataset  # For creating prompt dataset
 import time
 import os
 
 from .base_trainer import BaseTrainer
-from ..data.processor import DataProcessor  # To load prompts
+
+# from ..data.processor import DataProcessor # Not directly used here, main.py calls it
 
 logger = logging.getLogger(__name__)
 
@@ -15,173 +16,200 @@ logger = logging.getLogger(__name__)
 class RLTrainer(BaseTrainer):
     """
     Trainer for Reinforcement Learning (RLHF) using TRL's PPOTrainer.
-    This is a simplified example and a full RLHF setup is more involved.
+    Assumes SFT model is loaded as self.model, and self.train_dataset contains prompts.
     """
 
     def __init__(self, config, model, tokenizer, train_dataset, eval_dataset=None):
-        # For RL, 'model' passed here is the SFT model. 'tokenizer' is its tokenizer.
-        # 'train_dataset' here would be the prompt dataset.
         super().__init__(config, model, tokenizer, train_dataset, eval_dataset)
         self.rlhf_config = config['rlhf']
         self.ppo_config_args = self.rlhf_config['ppo_config']
         self.generation_kwargs = self.rlhf_config['generation_kwargs']
-        self.training_args_config = config['training_args']  # For output_dir, save_freq etc.
+        self.training_args_rl = config['training_args']  # For output_dir, total_ppo_epochs, etc.
+        self.output_dir = self.training_args_rl['output_dir']  # Override BaseTrainer's if different section
+        os.makedirs(self.output_dir, exist_ok=True)
 
-    def _get_reward_model_fn(self):
+    def _get_reward_function(self):
         """
-        Placeholder for loading or defining the reward model.
-        In a real scenario, this would load a pre-trained reward model.
-        This function should return a callable that takes (list of texts) -> (list of reward scores).
+        Loads or defines the reward model/function.
+        This is a CRITICAL part of RLHF and often involves a separate trained model.
         """
-        reward_model_name = self.rlhf_config.get("reward_model_name")
-        if reward_model_name:
-            logger.info(f"Attempting to load reward model: {reward_model_name}")
-
-            # This is highly dependent on how your reward model is structured.
-            # It might be another transformer model, an API call, etc.
-            # For this example, let's assume a dummy reward function.
-            # from transformers import pipeline
-            # sentiment_pipe = pipeline("sentiment-analysis", model=reward_model_name, device=self.model.device)
-            def reward_fn(texts: list[str]) -> torch.Tensor:
-                # rewards = []
-                # for text in texts:
-                #     # This is a placeholder. Replace with actual reward model logic.
-                #     # Example: score positive sentiment higher.
-                #     score = sentiment_pipe(text, return_all_scores=True)[0]
-                #     rewards.append(torch.tensor(score[1]['score'])) # Assuming positive score
-                # return torch.stack(rewards).to(self.model.device)
-                logger.warning("Using DUMMY reward function. Replace with actual reward model.")
-                return torch.tensor([float(len(t)) / 100.0 for t in texts],
-                                    device=self.model.device)  # Dummy: longer is better
-
-            return reward_fn
-        else:
+        reward_model_name_or_path = self.rlhf_config.get("reward_model_name")
+        if not reward_model_name_or_path:
             logger.error("reward_model_name not specified in rlhf_config. Cannot proceed with RLHF.")
             raise ValueError("Reward model name is required for RLHF.")
+
+        logger.info(f"Attempting to initialize reward function/model: {reward_model_name_or_path}")
+
+        # Example: Using a sentiment classification pipeline as a PROXY for a reward model.
+        # THIS IS NOT A PROPER REWARD MODEL FOR LLM ALIGNMENT.
+        # Replace with your actual reward model loading and inference logic.
+        try:
+            from transformers import pipeline
+            # Determine device for reward model (can be different from PPO actor/critic)
+            reward_device = self.ppo_config_args.get("reward_device", "cuda" if torch.cuda.is_available() else "cpu")
+            logger.info(f"Reward model will run on device: {reward_device}")
+
+            # For models like 'distilbert-base-uncased-finetuned-sst-2-english', task is 'sentiment-analysis'
+            # If your reward model is custom, you'll need custom loading.
+            sentiment_pipe = pipeline(
+                "sentiment-analysis",
+                model=reward_model_name_or_path,
+                device=reward_device,
+                # tokenizer=reward_model_name_or_path # Some pipelines need tokenizer explicitly
+            )
+            logger.info(f"Sentiment pipeline (proxy reward model) loaded: {reward_model_name_or_path}")
+
+            def reward_fn(texts: list[str]) -> torch.Tensor:
+                sentiments = sentiment_pipe(texts, truncation=True, padding=True)  # Batch process
+                rewards = []
+                for s in sentiments:
+                    # Example: positive sentiment gets higher reward
+                    # 'POSITIVE' (or 'LABEL_1' etc.) score as reward. Adjust based on your model's output.
+                    if s['label'] in ['POSITIVE', 'LABEL_1', '4 stars', '5 stars']:  # Check common positive labels
+                        rewards.append(torch.tensor(s['score']))
+                    else:  # Negative or neutral sentiment
+                        rewards.append(torch.tensor(1.0 - s['score']))  # Or a small negative value
+                return torch.tensor(rewards, dtype=torch.float32).to(self.ppo_config_args.get("device", "cpu"))
+
+            return reward_fn
+
+        except Exception as e:
+            logger.error(f"Failed to load reward model/fn '{reward_model_name_or_path}': {e}", exc_info=True)
+            logger.warning("Falling back to DUMMY REWARD function (length-based). THIS IS NOT FOR PRODUCTION.")
+
+            def dummy_reward_fn(texts: list[str]) -> torch.Tensor:
+                # Longer responses get higher reward - very naive!
+                return torch.tensor([float(len(t.split())) / 100.0 for t in texts], dtype=torch.float32).to(
+                    self.ppo_config_args.get("device", "cpu"))
+
+            return dummy_reward_fn
 
     def train(self):
         logger.info("Initializing RLHF (PPO) training process.")
 
-        # 1. PPO Configuration
+        # 1. PPO Configuration from YAML
         ppo_config = PPOConfig(**self.ppo_config_args)
         logger.debug(f"PPOConfig: {ppo_config}")
 
-        # 2. Load SFT model and wrap with ValueHead for PPO
-        # The 'self.model' is already the SFT model passed during initialization
-        sft_model_name = self.rlhf_config['base_model_name']  # Should be the same as self.model's origin
+        # 2. SFT Model (Actor) and ValueHead Model (Critic)
+        # self.model is the SFT model. We need to wrap it with a ValueHead.
+        # TRL's AutoModelForCausalLMWithValueHead can load the SFT model and add a value head.
+        # The path to the SFT model is `self.rlhf_config['base_model_name']`
+        sft_model_path = self.rlhf_config['base_model_name']
+        logger.info(f"Loading SFT model '{sft_model_path}' and wrapping with ValueHead for PPO...")
 
-        # Ensure model is on the correct device for PPOTrainer
-        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # self.model.to(device) # PPOTrainer will handle model device placement
-
-        # Wrap the SFT model with a value head.
-        # PPOTrainer can do this automatically if you pass the base model path to it,
-        # or you can do it manually. Let's use TRL's AutoModelForCausalLMWithValueHead.
-        # This requires the SFT model to be saved and reloaded, or careful handling
-        # if using an in-memory model.
-        # For simplicity, we assume `sft_model_name` points to a saved model.
+        # Determine if the SFT model was LoRA tuned, to load adapters if needed.
+        # This assumes the sft_model_path is a PEFT model if it was LoRA SFT.
         try:
-            ppo_model = AutoModelForCausalLMWithValueHead.from_pretrained(
-                sft_model_name,
-                # quantization_config=self.model.quantization_config if hasattr(self.model, 'quantization_config') else None,
-                # peft_config=self.model.peft_config if hasattr(self.model, 'active_adapters') else None, # If SFT was LoRA
-                trust_remote_code=True
+            ppo_model_with_value_head = AutoModelForCausalLMWithValueHead.from_pretrained(
+                sft_model_path,
+                trust_remote_code=True,
+                # peft_config might be needed if sft_model_path is base and adapter needs loading
+                # For simplicity, assume sft_model_path is already a PEFT model if applicable.
+                # Or, if it's a merged model, no peft_config needed here.
             )
-            logger.info(f"Loaded SFT model '{sft_model_name}' and wrapped with ValueHead.")
+            logger.info("SFT model wrapped with ValueHead successfully.")
         except Exception as e:
-            logger.error(f"Failed to load SFT model '{sft_model_name}' for PPO: {e}", exc_info=True)
+            logger.error(f"Failed to load SFT model '{sft_model_path}' with ValueHead: {e}", exc_info=True)
             raise
 
-        # 3. Reward Model Function
-        reward_fn = self._get_reward_model_fn()
+        # 3. Reward Function (from reward model)
+        reward_function = self._get_reward_function()
 
         # 4. Initialize PPOTrainer
-        # Note: The 'model' passed to PPOTrainer should be the SFT model *without* the value head.
-        # The 'ref_model' can be None, in which case the SFT model itself is used as reference
-        # with gradients detached. Or you can pass a separate reference model.
-        # PPOTrainer will create the ValueHead model internally if you provide the base model.
+        # self.train_dataset is the prompt dataset, already loaded and processed by DataProcessor.process_for_rl()
+        # It should contain 'input_ids' and 'query' (raw prompt text)
 
-        # Let's ensure self.model (the SFT model) is on the right device if not handled by PPOTrainer
-        # training_device = ppo_config.device
-        # self.model.to(training_device)
-        # ppo_model.to(training_device)
+        # Simple collator for list of dicts from dataset
+        def ppo_collator(data):
+            return {key: [d[key] for d in data] for key in data[0]}
 
         ppo_trainer = PPOTrainer(
             config=ppo_config,
-            model=ppo_model,  # The model with ValueHead
-            ref_model=None,  # Will use ppo_model's base for reference, with grads detached
+            model=ppo_model_with_value_head,  # Model with value head
+            ref_model=None,  # If None, a copy of the model is used as reference (with detached grads)
             tokenizer=self.tokenizer,
-            dataset=self.train_dataset,  # This is the prompt dataset
-            data_collator=lambda data: {key: [d[key] for d in data] for key in data[0]},  # Simple collator for prompts
-            # optimizer=None, # Can provide custom optimizer
+            dataset=self.train_dataset,  # Prompt dataset
+            data_collator=ppo_collator,
         )
-        logger.info("PPOTrainer initialized.")
+        logger.info(f"PPOTrainer initialized. Device: {ppo_trainer.accelerator.device}")
 
-        # 5. Training Loop
-        total_ppo_epochs = self.training_args_config.get('total_ppo_epochs', 1)
-        output_dir = self.training_args_config['output_dir']
-        save_freq = self.training_args_config.get('save_freq', 1)
+        # 5. RL Training Loop
+        total_ppo_epochs = self.training_args_rl.get('total_ppo_epochs', 1)
+        save_frequency = self.training_args_rl.get('save_freq', 1)  # Save every N PPO epochs
 
-        os.makedirs(output_dir, exist_ok=True)
+        # Ensure pad token ID is set for generation if tokenizer doesn't have it
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        for epoch in range(total_ppo_epochs):
-            logger.info(f"--- Starting PPO Epoch {epoch + 1}/{total_ppo_epochs} ---")
+        current_generation_kwargs = self.generation_kwargs.copy()
+        current_generation_kwargs['pad_token_id'] = self.tokenizer.pad_token_id
+
+        for ppo_epoch in range(total_ppo_epochs):
+            logger.info(f"--- Starting PPO Epoch {ppo_epoch + 1}/{total_ppo_epochs} ---")
             epoch_start_time = time.time()
 
             for batch_idx, batch in enumerate(ppo_trainer.dataloader):
-                # batch is expected to be a dict like {'prompt': [...], 'query': [...]}
-                # 'query' are tokenized prompts. PPOTrainer expects query_tensor.
-                query_tensors = [torch.tensor(item, device=ppo_trainer.accelerator.device) for item in
-                                 batch["input_ids"]]  # Assuming 'input_ids' from DataProcessor
+                # 'batch' from dataloader (using ppo_collator) will be like:
+                # {'input_ids': [tensor_prompt1, tensor_prompt2, ...], 'query': [str_prompt1, ...]}
+                query_tensors = batch['input_ids']  # These are already tensors if collator/dataset provides them
+                # Ensure they are on the correct device, PPOTrainer usually handles this internally
+                # query_tensors = [qt.to(ppo_trainer.accelerator.device) for qt in query_tensors]
 
-                # Generate responses
-                # self.generation_kwargs['pad_token_id'] = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+                # Generate responses from the policy model (actor)
+                # PPOTrainer.generate takes a list of Tensors (tokenized prompts)
+                logger.debug(f"Generating responses for {len(query_tensors)} prompts in batch {batch_idx + 1}")
                 response_tensors = ppo_trainer.generate(
                     query_tensors,
-                    return_prompt=False,  # We only want the generated part for reward calculation
-                    **self.generation_kwargs
+                    return_prompt=False,  # We only want the generated part for reward
+                    **current_generation_kwargs
                 )
 
-                # Detokenize responses to calculate reward
-                # batch['response'] should be list of strings
-                batch['response'] = [self.tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in
-                                     response_tensors]
+                # Detokenize responses to text for the reward model
+                # response_tensors is a list of Tensors, each for a prompt
+                batch['response_text'] = [self.tokenizer.decode(r.squeeze(), skip_special_tokens=True) for r in
+                                          response_tensors]
+                logger.debug(f"Sample generated response: {batch['response_text'][0][:100]}...")
 
-                # Calculate reward
-                # query_responses = [q + r for q, r in zip(batch['prompt'], batch['response'])] # Or however reward model expects input
-                rewards = reward_fn(batch['response'])  # Pass only responses or full text as needed
+                # Calculate reward scores for the generated responses
+                # reward_function expects a list of strings
+                reward_scores = reward_function(batch['response_text'])  # Returns a Tensor of rewards
+                logger.debug(f"Calculated rewards for batch. Mean reward: {torch.mean(reward_scores).item():.4f}")
 
-                # PPO step
-                stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
-                ppo_trainer.log_stats(stats, batch, rewards)  # Log stats
+                # PPO optimization step
+                # query_tensors: List[torch.LongTensor] -- tokenized prompts
+                # response_tensors: List[torch.LongTensor] -- tokenized responses
+                # reward_scores: torch.FloatTensor -- rewards for each response
+                stats = ppo_trainer.step(query_tensors, response_tensors, reward_scores)
 
-                if (batch_idx + 1) % 10 == 0:  # Log progress
-                    logger.info(
-                        f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(ppo_trainer.dataloader)}, Mean Reward: {torch.mean(rewards).item():.4f}")
+                # Log statistics
+                ppo_trainer.log_stats(stats, batch, reward_scores.cpu().numpy())  # log_stats expects numpy rewards
 
-            epoch_end_time = time.time()
-            logger.info(f"--- PPO Epoch {epoch + 1} completed in {epoch_end_time - epoch_start_time:.2f} seconds ---")
+                if (batch_idx + 1) % ppo_config.get("log_freq", 10) == 0:  # Log progress
+                    logger.info(f"PPO Epoch {ppo_epoch + 1}, Batch {batch_idx + 1}/{len(ppo_trainer.dataloader)}, "
+                                f"Mean Reward: {torch.mean(reward_scores).item():.4f}, "
+                                f"Objective/KL: {stats.get('objective/kl', 0.0):.4f}")
 
-            if (epoch + 1) % save_freq == 0 or (epoch + 1) == total_ppo_epochs:
-                logger.info(f"Saving model checkpoint at PPO epoch {epoch + 1}...")
-                save_path = os.path.join(output_dir, f"checkpoint_epoch_{epoch + 1}")
-                # PPOTrainer saves the policy model (actor)
-                ppo_trainer.save_pretrained(save_path)
-                # Tokenizer should also be saved if not already with the base SFT model
-                self.tokenizer.save_pretrained(save_path)
-                logger.info(f"Model saved to {save_path}")
+            epoch_duration = time.time() - epoch_start_time
+            logger.info(f"--- PPO Epoch {ppo_epoch + 1} completed in {epoch_duration:.2f} seconds ---")
+
+            # Save model checkpoint
+            if (ppo_epoch + 1) % save_frequency == 0 or (ppo_epoch + 1) == total_ppo_epochs:
+                checkpoint_save_path = os.path.join(self.output_dir, f"checkpoint_epoch_{ppo_epoch + 1}")
+                logger.info(f"Saving PPO model checkpoint to {checkpoint_save_path}...")
+                ppo_trainer.save_pretrained(checkpoint_save_path)
+                # Also save tokenizer for completeness with the checkpoint
+                self.tokenizer.save_pretrained(checkpoint_save_path)
+                logger.info(f"PPO Model checkpoint saved.")
 
         logger.info("RLHF (PPO) training finished.")
-        # Final save (optional, as it might be same as last checkpoint)
-        final_save_path = os.path.join(output_dir, "final_model")
-        ppo_trainer.save_pretrained(final_save_path)
-        self.tokenizer.save_pretrained(final_save_path)
-        logger.info(f"Final RLHF model saved to {final_save_path}.")
+        # Final save (policy model)
+        final_model_save_path = os.path.join(self.output_dir, "final_rlhf_model")
+        ppo_trainer.save_pretrained(final_model_save_path)
+        self.tokenizer.save_pretrained(final_model_save_path)  # Save tokenizer with final model
+        logger.info(f"Final RLHF policy model saved to {final_model_save_path}")
 
-    def save_model(self):
-        # PPOTrainer handles its own saving, so this might not be directly called
-        # or needs to be adapted to PPO's saving mechanism.
-        # The training loop above already saves.
-        logger.warning(
-            "RLTrainer.save_model() is typically handled within the PPO training loop. Call ppo_trainer.save_pretrained() instead.")
+    def save_model(self):  # Override BaseTrainer's save_model
+        logger.warning("RLTrainer uses PPOTrainer's internal saving mechanism (ppo_trainer.save_pretrained()) "
+                       "called within the training loop. Direct call to RLTrainer.save_model() is a no-op.")
         pass

@@ -1,48 +1,48 @@
 import logging
 import logging.config
-import yaml
+import yaml # Not used here for loading, but often associated
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-# 默认的日志配置，如果用户在主配置文件中没有提供完整的 logging 部分，则使用此配置。
+# Default logging configuration if not overridden by the main YAML config
 DEFAULT_LOGGING_CONFIG = {
     "version": 1,
-    "disable_existing_loggers": False, # Important to not disable loggers from libraries
+    "disable_existing_loggers": False,
     "formatters": {
         "standard": {
             "format": "%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S",
         },
         "simple": {
-            "format": "%(levelname)s - %(message)s",
+            "format": "%(levelname)s: %(message)s",
         },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
-            "level": "INFO",
+            "level": "INFO", # Default console level
             "formatter": "standard",
-            "stream": "ext://sys.stdout", # Output to stdout
+            "stream": "ext://sys.stdout",
         },
-        "file_handler": { # Example file handler
+        "file_handler": {
             "class": "logging.handlers.RotatingFileHandler",
-            "level": "DEBUG",
+            "level": "DEBUG", # Default file level
             "formatter": "standard",
-            "filename": "logs/llm_factory.log", # Default log file path
+            "filename": "logs/llm_factory_default.log", # Default log file
             "maxBytes": 1024 * 1024 * 100,  # 100 MB
-            "backupCount": 5, # Keep 5 backup files
+            "backupCount": 3,
             "encoding": "utf8",
         },
     },
     "loggers": {
-        "llm_factory": {  # Logger for our application
+        "llm_factory": { # Logger for our application
             "handlers": ["console", "file_handler"],
-            "level": "DEBUG", # Capture all debug messages from our app
-            "propagate": False, # Do not pass messages to the root logger if handled here
+            "level": "DEBUG", # Capture all debug messages from our app by default
+            "propagate": False,
         },
-        "transformers": { # Example: Control verbosity of transformers library
-            "handlers": ["console", "file_handler"],
-            "level": "WARNING",
+        "transformers": { # Control verbosity of transformers library
+            "handlers": ["console", "file_handler"], # Can use dedicated handlers too
+            "level": "WARNING", # Less verbose from libraries
             "propagate": False,
         },
         "datasets": {
@@ -50,19 +50,54 @@ DEFAULT_LOGGING_CONFIG = {
             "level": "WARNING",
             "propagate": False,
         },
+        "peft": {
+            "handlers": ["console", "file_handler"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "trl": {
+            "handlers": ["console", "file_handler"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "vllm": {
              "handlers": ["console", "file_handler"],
-             "level": "INFO", # vLLM can be verbose
+             "level": "INFO",
              "propagate": False,
+        },
+        "uvicorn": { # For FastAPI server logs
+            "handlers": ["console", "file_handler"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "uvicorn.error": { # Important for FastAPI errors
+            "handlers": ["console", "file_handler"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "uvicorn.access": { # Access logs, can be verbose
+            "handlers": ["console", "file_handler"],
+            "level": "WARNING", # Reduce verbosity of access logs
+            "propagate": False,
         }
     },
     "root": { # Root logger: catches everything not caught by specific loggers
-        "handlers": ["console", "file_handler"],
-        "level": "INFO", # Default level for everything else
+        "handlers": ["console"], # Default root handler to console
+        "level": "WARNING", # Default level for everything else
     },
 }
 
-def setup_logging(logging_config_override: Dict[str, Any] = None):
+def _deep_merge_dicts(base: dict, override: dict) -> dict:
+    """Recursively merges override dict into base dict."""
+    merged = base.copy()
+    for key, value in override.items():
+        if isinstance(value, dict) and key in merged and isinstance(merged[key], dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+def setup_logging(logging_config_override: Optional[Dict[str, Any]] = None):
     """
     Configures logging for the application.
     Uses a default configuration which can be overridden by a 'logging' section
@@ -71,15 +106,10 @@ def setup_logging(logging_config_override: Dict[str, Any] = None):
     config_to_use = DEFAULT_LOGGING_CONFIG.copy()
 
     if logging_config_override:
-        # Deep merge override into default. This allows partial overrides.
-        def merge_dicts(base, override):
-            for key, value in override.items():
-                if isinstance(value, dict) and key in base and isinstance(base[key], dict):
-                    merge_dicts(base[key], value)
-                else:
-                    base[key] = value
-            return base
-        config_to_use = merge_dicts(config_to_use, logging_config_override)
+        # Deep merge the override into the default config
+        config_to_use = _deep_merge_dicts(config_to_use, logging_config_override)
+        # print(f"Debug: Merged logging config: {json.dumps(config_to_use, indent=2)}")
+
 
     # Ensure log directory exists for file handlers
     for handler_name, handler_config in config_to_use.get("handlers", {}).items():
@@ -89,24 +119,25 @@ def setup_logging(logging_config_override: Dict[str, Any] = None):
             if log_dir and not os.path.exists(log_dir):
                 try:
                     os.makedirs(log_dir, exist_ok=True)
-                    print(f"Log directory created: {log_dir}")
+                    # print(f"Log directory created: {log_dir}") # Can be noisy
                 except OSError as e:
-                    print(f"Warning: Could not create log directory {log_dir}: {e}")
+                    # Use basic print as logger might not be fully set up or itself tries to log to file
+                    print(f"Warning: Could not create log directory {log_dir}: {e}. File logging for this handler might fail.")
                     # Potentially disable this handler or log to a default location
-                    # For now, we'll let dictConfig fail if it can't write
-                    pass # Let dictConfig handle the error if file cannot be created
+                    pass
 
     try:
         logging.config.dictConfig(config_to_use)
-        # Test log message
-        # logging.getLogger(__name__).info("Logging configured successfully using dictConfig.")
+        # Test log message to confirm setup
+        # logging.getLogger("llm_factory.utils.logging_setup").info("Logging configured successfully using dictConfig.")
     except Exception as e:
         # Fallback to basicConfig if dictConfig fails for any reason
-        print(f"Error configuring logging with dictConfig: {e}. Falling back to basicConfig.")
+        print(f"ERROR: Failed to configure logging with dictConfig: {e}. Falling back to basicConfig.")
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-        logging.warning("Used basicConfig due to an error in dictConfig setup.")
+        logging.getLogger("llm_factory.utils.logging_setup").warning(
+            "Used basicConfig due to an error in dictConfig setup. Check logging configuration."
+        )
 
-# Optional: A convenience function to get a logger (though logging.getLogger is standard)
 def get_logger(name: str) -> logging.Logger:
-    """Gets a logger instance."""
+    """Gets a logger instance. Convenience function."""
     return logging.getLogger(name)

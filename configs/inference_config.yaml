@@ -1,9 +1,28 @@
-# configs/inference_config.yaml
-# vLLM 通常从 MODEL_PATH 环境变量或启动参数获取模型，
-# 但这里可以放一些 API 服务的其他配置，或者如果 vllm_engine.py 设计为从这里读
+# Configuration for the inference API server
+# Model path and TP size are primarily controlled by environment variables
+# (MODEL_PATH, TP_SIZE) when using run_inference_api.sh or Docker.
+# This file can hold other server or vLLM engine specific settings if needed.
+
 server:
   host: "0.0.0.0"
-  # port: 8000 # 端口最好通过命令行参数或环境变量设置
+  # port: 8000 # Port is better set via command-line arg or script
 
-# logging: # 日志配置可以沿用
-#   ...
+# vllm_engine: # If VLLMEngine were to take more config from here
+  # tensor_parallel_size: 1 # Default, can be overridden by TP_SIZE env var
+  # dtype: "auto"
+  # max_model_len: null
+
+logging:
+  handlers:
+    console:
+      level: "INFO"
+    file_handler:
+      filename: "logs/inference_api.log"
+      level: "INFO"
+  loggers:
+    llm_factory:
+      level: "INFO"
+    vllm: # vLLM's own logger
+      level: "INFO"
+    uvicorn:
+      level: "INFO"

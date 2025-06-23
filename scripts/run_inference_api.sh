@@ -1,36 +1,53 @@
-#!/bin/bash
+#!/bin_bash
 
-# 默认模型路径，可以被环境变量覆盖
-DEFAULT_MODEL_PATH="./output/your_default_finetuned_model"
-MODEL_PATH=${LLM_MODEL_PATH:-$DEFAULT_MODEL_PATH} # 使用 LLM_MODEL_PATH 环境变量，否则用默认
+# Ensure script exits on error
+set -e
 
-# 默认推理配置文件
-DEFAULT_INFERENCE_CONFIG="./configs/inference_config.yaml" # 你需要创建一个这样的文件
-CONFIG_FILE=${LLM_INFERENCE_CONFIG:-$DEFAULT_INFERENCE_CONFIG}
+# Configuration file for the API server
+# First argument to script, or default
+CONFIG_FILE=${1:-"./configs/inference_config.yaml"}
 
-# API 服务端口
-PORT=${API_PORT:-8000}
+# Model path: Use LLM_MODEL_PATH env var if set, otherwise use a default
+# This default path should ideally point to a generally available model for out-of-box testing
+# or a placeholder indicating user needs to set it.
+DEFAULT_MODEL_PATH_FOR_SCRIPT="./output/default_model_for_api" # User should change this or set LLM_MODEL_PATH
+export MODEL_PATH=${LLM_MODEL_PATH:-$DEFAULT_MODEL_PATH_FOR_SCRIPT}
 
-# Tensor Parallel Size for vLLM
-TP_SIZE=${TP_SIZE:-1}
+# Tensor Parallel size for vLLM: Use TP_SIZE env var if set, otherwise default to 1
+export TP_SIZE=${TP_SIZE:-1}
 
-# 设置 PYTHONPATH
-export PYTHONPATH=$(pwd):$PYTHONPATH
+# API server port: Use API_PORT env var if set, otherwise default to 8000
+API_SERVER_PORT=${API_PORT:-8000}
 
-# 打印将要执行的命令
+# Check if config file exists
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Inference config file '${CONFIG_FILE}' not found."
+    echo "Please provide a valid config file or ensure './configs/inference_config.yaml' exists."
+    exit 1
+fi
+
+# Set PYTHONPATH
+SCRIPT_DIR_REALPATH=$(dirname "$(realpath "$0")")
+PROJECT_ROOT=$(dirname "$SCRIPT_DIR_REALPATH")
+export PYTHONPATH=${PROJECT_ROOT}:${PYTHONPATH}
+
+echo "PYTHONPATH set to: ${PYTHONPATH}"
 echo "Starting inference API server..."
-echo "Model Path: ${MODEL_PATH}"
-echo "Config File: ${CONFIG_FILE}"
-echo "Port: ${PORT}"
-echo "Tensor Parallel Size: ${TP_SIZE}"
+echo "  Config File: ${CONFIG_FILE}"
+echo "  Model Path (from env MODEL_PATH): ${MODEL_PATH}"
+echo "  Tensor Parallel Size (from env TP_SIZE): ${TP_SIZE}"
+echo "  API Port: ${API_SERVER_PORT}"
 
-# 将模型路径作为环境变量传递给 vLLM 引擎
-export MODEL_PATH # vLLM engine in api_server.py will pick this up
-export TP_SIZE    # vLLM engine in api_server.py will pick this up
+if [ "$MODEL_PATH" == "$DEFAULT_MODEL_PATH_FOR_SCRIPT" ]; then
+    echo "Warning: Using default model path '$DEFAULT_MODEL_PATH_FOR_SCRIPT'."
+    echo "Ensure MODEL_PATH environment variable is set to your desired model."
+    # Optionally, exit if a default model isn't truly usable:
+    # echo "Please set the LLM_MODEL_PATH environment variable to point to your model directory."
+    # exit 1
+fi
 
-# 启动 API 服务
-# 注意：如果 inference_config.yaml 中也定义了模型路径，环境变量会优先
-python -m llm_factory.main inference_api --config "${CONFIG_FILE}" --port "${PORT}"
-# main.py 的 inference_api 也需要接收 --port 参数
 
-echo "Inference API server script finished (or running in background if detached)."
+# Start the API server using the main entry point
+python -m llm_factory.main inference_api --config "${CONFIG_FILE}" --port "${API_SERVER_PORT}"
+
+echo "Inference API server script initiated."
