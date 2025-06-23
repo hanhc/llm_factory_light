@@ -20,9 +20,14 @@ COPY . .
 # 设置 PYTHONPATH
 ENV PYTHONPATH=/app
 
+# Create log directory if not handled by the application, and set permissions
+# This is a fallback, ideally the app creates it or logs to stdout/stderr managed by Docker
+RUN mkdir -p /app/logs && chown -R <user>:<group> /app/logs # Replace <user>:<group> if not running as root
+
 # 暴露 API 端口
 EXPOSE 8000
 
 # 默认启动命令 (可以被 docker run 命令覆盖)
 # 启动推理服务，模型路径通过环境变量传入
-CMD ["sh", "-c", "export MODEL_PATH=${MODEL_PATH:-/app/output/my-model} && python -m llm_factory.main inference_api --config /app/configs/inference_config.yaml"]
+CMD ["sh", "-c", "export MODEL_PATH=${MODEL_PATH:-/app/output/my-model} && \
+                 python -m llm_factory.main inference_api --config /app/configs/inference_config.yaml"]

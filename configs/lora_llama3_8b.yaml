@@ -34,3 +34,26 @@ training_args:
   save_steps: 100
   bf16: true # 如果你的 GPU 支持
   tf32: true # 如果你的 GPU 支持
+
+# 日志配置 (可选，如果未提供，将使用 logging_setup.py 中的 DEFAULT_LOGGING_CONFIG)
+# ... (model, data, lora, training_args sections from previous example) ...
+
+# 日志配置 (可选，如果未提供，将使用 logging_setup.py 中的 DEFAULT_LOGGING_CONFIG)
+logging:
+  formatters:
+    standard: # Override standard formatter if needed
+      format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+  handlers:
+    console:
+      level: "INFO" # Set console level to INFO for this specific run
+    file_handler:
+      filename: "logs/my_experiment_llama3_lora.log" # Specific log file for this experiment
+      level: "DEBUG"
+  loggers:
+    llm_factory:
+      level: "DEBUG" # Get detailed logs from our application
+      handlers: ["console", "file_handler"] # Ensure it uses our defined handlers
+    transformers:
+      level: "INFO" # Reduce verbosity from transformers for this run
+  root:
+    level: "INFO"
