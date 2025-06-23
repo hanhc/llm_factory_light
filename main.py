@@ -3,9 +3,11 @@ import logging  # Standard library
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from .data.processor import DataProcessor
 from .training.trainer_factory import get_trainer
+from .evaluation.evaluator import Evaluator # Add this import
 from .utils.config_loader import load_config
 from .utils.logging_setup import setup_logging  # Import the setup function
 from .inference.api_server import start_server
+
 
 # It's good practice to get the module-level logger after setup_logging
 # However, if you need to log before config is loaded (e.g. parsing args errors),
@@ -60,18 +62,28 @@ def main():
 
     elif args.mode == 'eval':
         logger.info("--- Evaluation Mode Initialized ---")
-        # Implement evaluation logic
-        # evaluator = Evaluator(config)
-        # evaluator.run()
-        logger.warning("Evaluation mode is not fully implemented yet.")
-        pass
+        if 'evaluation' not in config:
+            logger.error("Missing 'evaluation' section in the configuration file for eval mode.")
+            return
+
+        evaluator = Evaluator(config)  # Pass the full config
+        eval_results = evaluator.run()
+        logger.info(f"Evaluation Results: {eval_results}")
+        # Optionally save results to a file
+        output_file = config.get('evaluation', {}).get('output_file', 'eval_results.json')
+        if output_file:
+            import json
+            with open(output_file, 'w') as f:
+                json.dump(eval_results, f, indent=4)
+            logger.info(f"Evaluation results saved to {output_file}")
 
     elif args.mode == 'inference_api':
-        logger.info("--- Inference API Server Mode Initialized ---")
-        # Ensure API server components also use the configured logging
-        # The VLLMEngine can get its own logger: logging.getLogger('llm_factory.inference.vllm_engine')
-        logger.info("Starting API server...")
-        start_server()  # This function internally might configure its own loggers or use root.
+        # Add port argument to parser if not already there for API mode
+        # parser.add_argument("--port", type=int, default=8000, help="Port for the API server")
+        # Ensure 'args' has 'port' if you add it to the main parser, or handle it specifically for this mode.
+        port = getattr(args, 'port', 8000)  # Get port from args if defined, else default
+        logger.info(f"--- Starting Inference API Server on port {port} ---")
+        start_server(host=config.get('server', {}).get('host', "0.0.0.0"), port=port)
 
 
 if __name__ == "__main__":

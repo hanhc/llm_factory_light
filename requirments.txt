@@ -10,3 +10,8 @@ vllm
 fastapi
 uvicorn[standard]
 pyyaml
+pandas         # For ParquetLoader
+pyarrow        # For ParquetLoader (often a dependency of pandas for parquet)
+evaluate       # For Evaluator
+# tensorboard  # If using it for logging
+# wandb        # If using it for logging

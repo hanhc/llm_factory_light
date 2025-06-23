@@ -1,0 +1,60 @@
+# 训练方法
+training_method: rlhf
+
+# RLHF 配置 (基于 TRL PPOTrainer)
+rlhf:
+  # PPO 相关的模型
+  base_model_name: "path/to/sft_trained_model" # SFT 预训练模型
+  # reward_model_name: "path/to/reward_model" # 奖励模型，也可以是一个函数或服务
+
+  # PPO 训练参数
+  ppo_config:
+    batch_size: 32
+    mini_batch_size: 4
+    gradient_accumulation_steps: 1
+    learning_rate: 1.0e-6
+    adap_kl_ctrl: true
+    init_kl_coef: 0.05
+    target: 6.0
+    horizon: 10000
+    gamma: 1.0
+    lam: 0.95
+    cliprange: 0.2
+    cliprange_value: 0.2
+    vf_coef: 0.1
+    ppo_epochs: 4
+    # max_grad_norm: # 如果需要
+    # target_kl: # 如果 adap_kl_ctrl 为 false
+    # log_with: "tensorboard" # 或 "wandb"
+
+  # Tokenizer 和生成参数
+  tokenizer_name_or_path: "path/to/sft_trained_model" # 通常与 SFT 模型一致
+  generation_kwargs:
+    max_new_tokens: 128
+    top_k: 0
+    top_p: 1.0
+    do_sample: true
+    temperature: 0.9
+    # pad_token_id: # 如果 tokenizer 没有，需要设置
+
+# 数据配置 (用于生成 prompts)
+data:
+  prompt_dataset_path: "./data/rlhf_prompts.jsonl" # 包含 "prompt" 字段的 JSONL 文件
+  file_format: "jsonl"
+
+# 训练参数 (用于控制整体流程，如迭代次数)
+training_args:
+  output_dir: "./output/my_model_rlhf"
+  total_ppo_epochs: 10 # 总的 PPO 迭代次数
+  save_freq: 2 # 每多少个 PPO epoch 保存一次模型
+
+# 日志配置
+logging:
+  handlers:
+    file_handler:
+      filename: "logs/my_model_rlhf.log"
+  loggers:
+    llm_factory:
+      level: "DEBUG"
+    trl: # TRL 库的日志
+      level: "INFO"

@@ -57,3 +57,14 @@ logging:
       level: "INFO" # Reduce verbosity from transformers for this run
   root:
     level: "INFO"
+
+evaluation:
+  model_to_evaluate_path: "./output/llama3-8b-lora" # Path to the fine-tuned model
+  dataset_path: "wikitext" # Or path to a local file e.g., "./data/eval_data.txt"
+  dataset_name: "wikitext-2-raw-v1" # If using HF datasets library identifier
+  dataset_split: "test"
+  text_column: "text" # Column in dataset containing text for perplexity
+  metrics: ["perplexity"] # List of metrics to compute
+  batch_size: 2 # Batch size for perplexity calculation
+  perplexity_stride: 512
+  output_file: "./output/llama3-8b-lora/eval_results.json"

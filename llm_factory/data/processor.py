@@ -2,8 +2,8 @@ import logging  # Add this line
 from transformers import AutoTokenizer
 from datasets import Dataset
 from .json_loader import JsonLoader
+from .parquet_loader import ParquetLoader
 
-# from .parquet_loader import ParquetLoader # Future extension
 
 logger = logging.getLogger(__name__)  # Get a logger specific to this module
 
@@ -12,7 +12,7 @@ class DataProcessor:
     LOADER_MAPPING = {
         "json": JsonLoader,
         "jsonl": JsonLoader,
-        # "parquet": ParquetLoader,
+        "parquet": ParquetLoader,
     }
 
     def __init__(self, data_config: dict):
@@ -84,3 +84,32 @@ class DataProcessor:
         dataset = Dataset.from_list(processed_data)
         logger.info(f"Data processing complete. Created dataset with {len(dataset)} entries.")
         return dataset
+
+    # In main.py, when mode is 'train' and method is 'rlhf':
+    # train_dataset = data_processor.process_for_rl() # Instead of data_processor.process()
+    def process_for_rl(self) -> Dataset:
+        """Loads and tokenizes prompts for RL training."""
+        loader = self._get_loader()
+        raw_prompts_data = loader.load()  # Expects list of dicts, e.g., [{"prompt": "text"}, ...]
+
+        if not raw_prompts_data:
+            logger.warning("No raw prompts data loaded for RL. Returning empty dataset.")
+            return Dataset.from_list([])
+
+        def tokenize_prompts(example):
+            if "prompt" not in example:
+                logger.warning(f"RL prompt data missing 'prompt' field: {example}")
+                return {"input_ids": [], "attention_mask": [], "raw_prompt": ""}
+
+            prompt_text = example["prompt"]
+            tokenized = self.tokenizer(prompt_text, truncation=True,
+                                       max_length=self.config.get('max_prompt_length', 512))
+            return {"input_ids": tokenized["input_ids"], "attention_mask": tokenized["attention_mask"],
+                    "raw_prompt": prompt_text}
+
+        # Check if the data is already in the Hugging Face Dataset format, or list of dicts.
+        # Assuming loader.load() returns List[Dict]
+        processed_prompts = [tokenize_prompts(item) for item in raw_prompts_data]
+        return Dataset.from_list(processed_prompts)
+    # In main.py, when mode is 'train' and method is 'rlhf':
+    # train_dataset = data_processor.process_for_rl() # Instead of data_processor.process()

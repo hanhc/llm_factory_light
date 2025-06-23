@@ -1,0 +1,57 @@
+# 训练方法
+training_method: sft
+
+# 模型配置
+model:
+  name_or_path: "Qwen/Qwen1.5-7B-Chat" # 示例，可以是其他支持 SFT 的模型
+  # quantization_config: # 如果需要量化，可以在这里添加，SFTTrainer 支持
+  #   load_in_4bit: true
+  #   bnb_4bit_quant_type: "nf4"
+  #   bnb_4bit_compute_dtype: "torch.bfloat16" # 根据GPU调整
+
+# 数据配置
+data:
+  file_path: "./data/sft_dataset.jsonl" # 确保数据集格式与 SFTTrainer 期望的一致
+  file_format: "jsonl" # 或其他 processor 支持的格式
+  tokenizer_name_or_path: "Qwen/Qwen1.5-7B-Chat" # 与模型一致
+  use_fast_tokenizer: true
+  # SFTTrainer 通常需要一个 'text' 字段，或者你可以指定 formatting_func_name
+  # 如果你的数据是 prompt/response 对，DataProcessor 需要处理成合适的格式
+  # 或者，你可以在 SFTTrainer 中直接提供 dataset_text_field 或 formatting_func
+  dataset_text_field: "text" # 假设 DataProcessor 输出的 Dataset 有一个 'text' 字段
+
+# SFT Trainer 特定配置 (部分参数与 TrainingArguments 重合或通过其传递)
+sft_args:
+  max_seq_length: 1024
+  # packing: true # 如果想启用 packing 以提高效率
+  # formatting_func: # 如果 DataProcessor 没有准备好 'text' 字段，可以在这里定义 Python 函数的路径
+  # neftune_noise_alpha: 5 # 可选，一种正则化技术
+
+# 训练参数 (对应 transformers.TrainingArguments)
+training_args:
+  output_dir: "./output/qwen1.5-7b-sft"
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1 # 如果有评估集
+  gradient_accumulation_steps: 16
+  learning_rate: 1.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  logging_steps: 5
+  save_steps: 100
+  save_total_limit: 2
+  bf16: true # 如果你的 GPU 支持
+  tf32: true # 如果你的 GPU 支持
+  # evaluation_strategy: "steps" # 如果有评估集
+  # eval_steps: 100 # 如果有评估集
+  report_to: "tensorboard" # 或 "wandb"
+
+# 日志配置 (继承或覆盖默认)
+logging:
+  handlers:
+    file_handler:
+      filename: "logs/qwen_7b_sft_train.log"
+  loggers:
+    llm_factory:
+      level: "DEBUG"
